@@ -1,8 +1,73 @@
 const crypto = require('crypto');
+const https = require('https');
 
 // ⚠️ Configure isso no painel da Vercel em Settings > Environment Variables
 // Nunca coloque o secret direto no código.
 const WEBHOOK_SECRET = process.env.PANTERAPAY_WEBHOOK_SECRET;
+
+// --- Configuração do WhatsApp via Twilio ---
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const TWILIO_WHATSAPP_FROM = process.env.TWILIO_WHATSAPP_FROM; // ex: whatsapp:+14155238886
+const MY_WHATSAPP_NUMBER = process.env.MY_WHATSAPP_NUMBER; // ex: whatsapp:+5511949867547
+
+// URL pública da logo da PanteraPay (hospedada neste mesmo projeto, pasta /public)
+// process.env.VERCEL_URL já vem preenchido automaticamente pela Vercel em runtime.
+const LOGO_URL = `https://${process.env.VERCEL_URL || 'SEU-DOMINIO.vercel.app'}/panterapay-logo.jpg`;
+
+// Envia uma mensagem de WhatsApp com a logo anexada, via API da Twilio
+async function sendWhatsAppNotification(text) {
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_WHATSAPP_FROM || !MY_WHATSAPP_NUMBER) {
+    console.warn('⚠️ Variáveis da Twilio não configuradas — notificação de WhatsApp pulada.');
+    return;
+  }
+
+  // 📷 Envio de logo temporariamente desativado — estava dando erro de
+  // carregamento da imagem. Removido MediaUrl para garantir que o TEXTO
+  // da notificação chegue de forma confiável. Para reativar a logo depois,
+  // volte a incluir MediaUrl: LOGO_URL no objeto abaixo, uma vez que a
+  // URL da imagem estiver funcionando corretamente.
+  const body = new URLSearchParams({
+    From: TWILIO_WHATSAPP_FROM,
+    To: MY_WHATSAPP_NUMBER,
+    Body: text,
+  }).toString();
+
+  const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
+
+  return new Promise((resolve) => {
+    const req = https.request(
+      {
+        hostname: 'api.twilio.com',
+        path: `/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Length': Buffer.byteLength(body),
+          Authorization: `Basic ${auth}`,
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            console.log('✅ Notificação WhatsApp enviada.');
+          } else {
+            console.error('❌ Falha ao enviar WhatsApp:', res.statusCode, data);
+          }
+          resolve(data); // não derruba o webhook por causa de falha no WhatsApp
+        });
+      }
+    );
+    req.on('error', (err) => {
+      console.error('❌ Erro de rede ao enviar WhatsApp:', err);
+      resolve(null);
+    });
+    req.write(body);
+    req.end();
+  });
+}
 
 module.exports = async (req, res) => {
   // A PanteraPay só aceita POST — qualquer outro método, rejeita.
@@ -108,25 +173,46 @@ module.exports = async (req, res) => {
 async function handlePaymentApproved(payload) {
   console.log('✅ Pagamento aprovado:', payload);
   // ex: await db.orders.update({ id: payload.order_id, status: 'paid' })
+  await sendWhatsAppNotification(
+    `✅ *PanteraPay* — Venda aprovada!\nValor: ${formatAmount(payload.amount)}\nID: ${payload.order_id || payload.id || 'N/A'}`
+  );
 }
 
 async function handlePaymentFailed(payload) {
   console.log('❌ Pagamento falhou:', payload);
   // ex: await db.orders.update({ id: payload.order_id, status: 'failed' })
+  await sendWhatsAppNotification(
+    `❌ *PanteraPay* — Venda não concluída.\nValor: ${formatAmount(payload.amount)}\nID: ${payload.order_id || payload.id || 'N/A'}`
+  );
 }
 
 async function handleTransferApproved(payload) {
   console.log('✅ Saque aprovado:', payload);
+  await sendWhatsAppNotification(
+    `✅ *PanteraPay* — Saque realizado!\nValor: ${formatAmount(payload.amount)}\nID: ${payload.id || 'N/A'}`
+  );
 }
 
 async function handleTransferFailed(payload) {
   console.log('❌ Saque falhou:', payload);
+  await sendWhatsAppNotification(
+    `❌ *PanteraPay* — Saque falhou.\nValor: ${formatAmount(payload.amount)}\nID: ${payload.id || 'N/A'}`
+  );
 }
 
 async function handlePixInfraction(payload) {
   console.log('⚠️ Infração Pix reportada:', payload);
   // Este evento costuma exigir resposta manual/urgente — considere
   // disparar um alerta (e-mail, Slack) além de só logar.
+  await sendWhatsAppNotification(
+    `⚠️ *PanteraPay* — Infração Pix reportada. Verifique o painel com urgência.\nID: ${payload.id || 'N/A'}`
+  );
+}
+
+// Formata centavos como Real brasileiro (ex: 1490 -> R$ 14,90)
+function formatAmount(cents) {
+  if (typeof cents !== 'number') return 'N/A';
+  return (cents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
 // ---------- Utilitários ----------

@@ -1,6 +1,0 @@
-{
-  "name": "panterapay-webhook",
-  "version": "1.0.0",
-  "private": true,
-  "description": "Endpoint para receber webhooks da PanteraPay"
-}
